@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NIT Trichy Custom Routing</title>
+    <!-- Leaflet CSS for the Map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
+        #map { height: 100vh; width: 100vw; }
+        #ui-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        button {
+            background: #007bff; color: white; border: none; 
+            padding: 10px 15px; border-radius: 4px; cursor: pointer;
+            margin-top: 10px; width: 100%; font-weight: bold;
+        }
+        button:hover { background: #0056b3; }
+        select { width: 100%; padding: 8px; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-panel">
+        <h3 style="margin-top: 0;">Campus Router (A*)</h3>
+        <label>Start Location:</label>
+        <select id="startNode">
+            <option value="Hostel">Hostel</option>
+            <option value="Library">Central Library</option>
+            <option value="Orion">Orion Block</option>
+            <option value="Octagon">Octagon</option>
+        </select>
+        
+        <br><br>
+        <label>Destination:</label>
+        <select id="endNode">
+            <option value="Orion">Orion Block</option>
+            <option value="Library">Central Library</option>
+            <option value="Hostel">Hostel</option>
+            <option value="Octagon">Octagon</option>
+        </select>
+
+        <button onclick="calculateRoute()">Find Best Route</button>
+    </div>
+
+    <div id="map"></div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        // 1. Initialize the Map (Centered roughly on NIT Trichy)
+        const map = L.map('map').setView([10.762, 78.816], 15);
+
+        // Load free OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // 2. Mock Graph Data (In a real project, this comes from your GeoJSON file)
+        // These are coordinates for dummy locations around the campus center
+        const nodes = {
+            "Hostel": { lat: 10.760, lng: 78.813 },
+            "Library": { lat: 10.763, lng: 78.815 },
+            "Orion": { lat: 10.764, lng: 78.818 },
+            "Octagon": { lat: 10.761, lng: 78.817 },
+            "Junction1": { lat: 10.762, lng: 78.815 }, // Internal path node
+            "Junction2": { lat: 10.763, lng: 78.817 }  // Internal path node
+        };
+
+        // Define which nodes connect to which (Edges)
+        const graph = {
+            "Hostel": ["Junction1", "Octagon"],
+            "Octagon": ["Hostel", "Junction2"],
+            "Junction1": ["Hostel", "Library", "Junction2"],
+            "Library": ["Junction1", "Junction2"],
+            "Junction2": ["Junction1", "Library", "Octagon", "Orion"],
+            "Orion": ["Junction2"]
+        };
+
+        // Draw the nodes on the map for visualization
+        Object.keys(nodes).forEach(key => {
+            if(!key.includes("Junction")) {
+                L.marker([nodes[key].lat, nodes[key].lng]).addTo(map).bindPopup(key);
+            }
+        });
+
+        let currentRouteLine = null;
+
+        // --- Helper: Calculate straight-line distance (Heuristic for A*) ---
+        function getDistance(nodeA, nodeB) {
+            const lat1 = nodes[nodeA].lat, lon1 = nodes[nodeA].lng;
+            const lat2 = nodes[nodeB].lat, lon2 = nodes[nodeB].lng;
+            const R = 6371e3; // Earth radius in meters
+            const φ1 = lat1 * Math.PI/180, φ2 = lat2 * Math.PI/180;
+            const Δφ = (lat2-lat1) * Math.PI/180;
+            const Δλ = (lon2-lon1) * Math.PI/180;
+            const a = Math.sin(Δφ/2) * Math.sin(Δφ/2) + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ/2) * Math.sin(Δλ/2);
+            return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        }
+
+        // --- 3. The A* Algorithm ---
+        function aStar(start, end) {
+            let openSet = [start];
+            let cameFrom = {};
+            
+            let gScore = {}; // Cost from start along best known path
+            let fScore = {}; // Estimated total cost from start to goal
+
+            // Initialize scores to infinity
+            Object.keys(nodes).forEach(n => {
+                gScore[n] = Infinity;
+                fScore[n] = Infinity;
+            });
+
+            gScore[start] = 0;
+            fScore[start] = getDistance(start, end);
+
+            while (openSet.length > 0) {
+                // Find node in openSet with lowest fScore
+                let current = openSet.reduce((lowest, node) => fScore[node] < fScore[lowest] ? node : lowest, openSet[0]);
+
+                if (current === end) {
+                    return reconstructPath(cameFrom, current);
+                }
+
+                openSet = openSet.filter(n => n !== current); // Remove current
+
+                // Check all neighbors
+                graph[current].forEach(neighbor => {
+                    let tentative_gScore = gScore[current] + getDistance(current, neighbor);
+                    
+                    if (tentative_gScore < gScore[neighbor]) {
+                        cameFrom[neighbor] = current;
+                        gScore[neighbor] = tentative_gScore;
+                        fScore[neighbor] = gScore[neighbor] + getDistance(neighbor, end);
+                        
+                        if (!openSet.includes(neighbor)) {
+                            openSet.push(neighbor);
+                        }
+                    }
+                });
+            }
+            return []; // No path found
+        }
+
+        function reconstructPath(cameFrom, current) {
+            let totalPath = [current];
+            while (cameFrom[current]) {
+                current = cameFrom[current];
+                totalPath.unshift(current);
+            }
+            return totalPath;
+        }
+
+        // --- 4. Handle Button Click & Render ---
+        function calculateRoute() {
+            const startNode = document.getElementById('startNode').value;
+            const endNode = document.getElementById('endNode').value;
+
+            if (startNode === endNode) {
+                alert("Start and Destination are the same!");
+                return;
+            }
+
+            const path = aStar(startNode, endNode);
+            
+            if (path.length > 0) {
+                // Convert node names to Lat/Lng arrays for Leaflet Polyline
+                const latlngs = path.map(node => [nodes[node].lat, nodes[node].lng]);
+                
+                // Clear old route if exists
+                if (currentRouteLine) map.removeLayer(currentRouteLine);
+                
+                // Draw new route
+                currentRouteLine = L.polyline(latlngs, {color: 'red', weight: 5, opacity: 0.7}).addTo(map);
+                map.fitBounds(currentRouteLine.getBounds(), {padding: [50, 50]});
+            }
+        }
+    </script>
+</body>
+</html>
